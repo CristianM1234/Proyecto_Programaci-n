@@ -1,0 +1,183 @@
+import network
+import uasyncio as asyncio
+from machine import Pin
+import time
+import gc
+
+# Configuración del hardware
+STEP_PIN = 14
+DIR_PIN = 12
+ENABLE_PIN = 13
+AP_SSID = "ESP32_Stepper"
+AP_PASSWORD = "12345678"
+
+# Estado global
+scheduled_time = None
+stepper_running = False
+
+# Inicialización de hardware
+step = Pin(STEP_PIN, Pin.OUT)
+direction = Pin(DIR_PIN, Pin.OUT)
+enable = Pin(ENABLE_PIN, Pin.OUT, 0)
+
+def load_html():
+    try:
+        with open('index.html', 'r') as f:
+            return f.read()
+    except:
+        return """<html><body><h1>Control Motor NEMA17</h1></body></html>"""
+
+async def move_stepper(steps, direction_value=1, delay=0.001):
+    global stepper_running
+    stepper_running = True
+    direction.value(direction_value)
+    for _ in range(steps):
+        step.value(1)
+        await asyncio.sleep(delay)
+        step.value(0)
+        await asyncio.sleep(delay)
+    stepper_running = False
+
+def setup_ap():
+    ap = network.WLAN(network.AP_IF)
+    ap.active(False)
+    time.sleep(1)
+    ap.config(essid=AP_SSID, password=AP_PASSWORD, authmode=3)
+    ap.active(True)
+    while not ap.active():
+        time.sleep(0.5)
+    print("AP listo. IP:", ap.ifconfig()[0])
+    return ap
+
+async def send_response(writer, content="", content_type="text/html", status_code=200):
+    try:
+        if writer is None:
+            print("Error: Writer es None")
+            return
+            
+        # Asegurarse que el contenido es string
+        content = str(content) if content is not None else ""
+        
+        response = [
+            "HTTP/1.1 {} OK".format(status_code),
+            "Content-Type: {}".format(content_type),
+            "Connection: close",
+            "Content-Length: {}".format(len(content)),
+            "",
+            content
+        ]
+        
+        # Enviar respuesta línea por línea
+        for line in response:
+            if line != "":
+                await writer.awrite(line.encode() if isinstance(line, str) else line)
+            await writer.awrite(b"\r\n")
+            
+        await writer.drain()
+    except Exception as e:
+        print("Error en send_response:", e)
+    finally:
+        try:
+            if writer is not None:
+                writer.close()
+                await writer.wait_closed()
+        except:
+            pass
+
+async def handle_client(reader, writer):
+    try:
+        request_line = await reader.readline()
+        if not request_line:
+            return
+            
+        # Leer headers restantes
+        while True:
+            line = await reader.readline()
+            if line == b"\r\n" or line == b"":
+                break
+        
+        # Parsear solicitud
+        request = request_line.decode().strip()
+        parts = request.split()
+        
+        if len(parts) < 2:
+            await send_response(writer, "Bad Request", status_code=400)
+            return
+            
+        method, path = parts[0], parts[1]
+        
+        # Manejar rutas - CAMBIO CLAVE AQUÍ
+        if path == '/' or path == '/index.html':
+            await send_response(writer, load_html())
+        elif path.startswith('/schedule'):
+            await handle_schedule(writer, path)
+        elif path == '/manual':
+            await handle_manual(writer)
+        elif path == '/status':
+            await handle_status(writer)
+        else:
+            await send_response(writer, load_html())  # Siempre devolver HTML para rutas desconocidas
+            
+    except Exception as e:
+        print("Error en handle_client:", e)
+        await send_response(writer, load_html())  # Devuelve HTML incluso en errores
+
+async def handle_schedule(writer, path):
+    global scheduled_time
+    try:
+        if '?' in path:
+            query = path.split('?')[1]
+            params = dict(p.split('=') for p in query.split('&') if '=' in p)
+            scheduled_time = params.get('time', '').replace('%3A', ':')
+            if scheduled_time:
+                print("Horario programado:", scheduled_time)
+                await send_response(writer, f"Programado: {scheduled_time}", "text/plain")
+            else:
+                await send_response(writer, "Falta parámetro time", "text/plain", 400)
+        else:
+            await send_response(writer, "Consulta inválida", "text/plain", 400)
+    except Exception as e:
+        print("Error en handle_schedule:", e)
+        await send_response(writer, "Error en programación", "text/plain", 500)
+
+async def handle_manual(writer):
+    global stepper_running
+    if not stepper_running:
+        asyncio.create_task(move_stepper(200))
+        await send_response(writer, "Motor activado", "text/plain")
+    else:
+        await send_response(writer, "Motor ya activo", "text/plain")
+
+async def handle_status(writer):
+    status = {
+        'status': 'Moving' if stepper_running else 'Stopped',
+        'schedule': scheduled_time if scheduled_time else 'None'
+    }
+    await send_response(writer, str(status).replace("'", '"'), "application/json")
+
+async def check_schedule():
+    while True:
+        if scheduled_time:
+            now = time.localtime()
+            current = f"{now[3]:02d}:{now[4]:02d}"
+            if current == scheduled_time and not stepper_running:
+                print("Ejecutando horario programado")
+                asyncio.create_task(move_stepper(200))
+        await asyncio.sleep(30)
+
+async def main():
+    gc.collect()
+    setup_ap()
+    server = await asyncio.start_server(handle_client, "0.0.0.0", 80)
+    print("Servidor iniciado")
+    asyncio.create_task(check_schedule())
+    while True:
+        await asyncio.sleep(1)
+
+try:
+    asyncio.run(main())
+except KeyboardInterrupt:
+    print("Apagando...")
+    enable.value(1)
+finally:
+    enable.value(1)

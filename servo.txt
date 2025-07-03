@@ -1,0 +1,338 @@
+import network
+import socket
+from machine import Pin, PWM
+
+# Configuración del servo
+servo = PWM(Pin(13), freq=50)
+
+def set_angle(angle):
+    pulse = int(500 + (angle / 180) * 2000)
+    servo.duty_ns(pulse * 1000)
+
+# Modo Access Point
+ap = network.WLAN(network.AP_IF)
+ap.active(True)
+ap.config(essid="ESP32_Servo", password="12345678")
+print("IP del AP:", ap.ifconfig()[0])
+
+# Servidor web
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(('0.0.0.0', 80))
+s.listen(5)
+
+print("Servidor web listo en http://192.168.4.1")
+
+while True:
+    conn, addr = s.accept()
+    request = conn.recv(1024).decode('utf-8')
+    
+    if "GET /?angle=" in request:
+        angle = int(request.split('=')[1].split(' ')[0])
+        set_angle(angle)
+        print("Servo movido a:", angle, "°")
+    
+    # HTML con deslizador + temporizador
+    html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Comedero Automático para Mascotas</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        :root {
+            --primary: #4a6fa5;
+            --secondary: #ff7e5f;
+            --light: #f8f9fa;
+            --dark: #343a40;
+            --success: #28a745;
+        }
+        
+        body {
+            font-family: 'Poppins', sans-serif;
+            background-color: #f5f7fa;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+        
+        h1 {
+            color: var(--primary);
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 16px;
+        }
+        
+        .panel {
+            background: var(--light);
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        
+        .panel-title {
+            font-size: 18px;
+            color: var(--primary);
+            margin-top: 0;
+            display: flex;
+            align-items: center;
+        }
+        
+        .panel-title i {
+            margin-right: 10px;
+            color: var(--secondary);
+        }
+        
+        #clock {
+            font-size: 28px;
+            font-weight: bold;
+            color: var(--primary);
+            background: rgba(74, 111, 165, 0.1);
+            padding: 10px 20px;
+            border-radius: 50px;
+            display: inline-block;
+            margin: 10px 0;
+        }
+        
+        .slider-container {
+            margin: 25px 0;
+        }
+        
+        .slider {
+            width: 100%;
+            height: 10px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: #ddd;
+            outline: none;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 25px;
+            height: 25px;
+            border-radius: 50%;
+            background: var(--primary);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .slider::-webkit-slider-thumb:hover {
+            transform: scale(1.1);
+            background: var(--secondary);
+        }
+        
+        .angle-display {
+            font-size: 20px;
+            font-weight: bold;
+            color: var(--dark);
+            margin: 15px 0;
+        }
+        
+        .angle-value {
+            color: var(--secondary);
+            font-size: 24px;
+        }
+        
+        .form-group {
+            margin: 20px 0;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: var(--dark);
+            font-weight: 500;
+        }
+        
+        input[type="time"] {
+            padding: 12px 15px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            width: 150px;
+            text-align: center;
+        }
+        
+        button {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 600;
+            margin: 10px 5px;
+        }
+        
+        button:hover {
+            background-color: var(--secondary);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        .alarm-status {
+            margin-top: 15px;
+            font-weight: 500;
+        }
+        
+        .active-alarm {
+            color: var(--success);
+            font-weight: 600;
+        }
+        
+        .pet-icon {
+            font-size: 40px;
+            color: var(--secondary);
+            margin-bottom: 10px;
+        }
+        
+        @media (max-width: 480px) {
+            .container {
+                padding: 15px;
+            }
+            
+            h1 {
+                font-size: 24px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="pet-icon">
+            <i class="fas fa-paw"></i>
+        </div>
+        <h1>Comedero Automático</h1>
+        <p class="subtitle">Control remoto para tu mascota</p>
+        
+        <div id="clock"></div>
+        
+        <div class="panel">
+            <h3 class="panel-title"><i class="fas fa-hand-paper"></i> Control Manual</h3>
+            <div class="slider-container">
+                <input type="range" min="0" max="180" value="90" class="slider" id="servoSlider" 
+                       oninput="updateServo(this.value)">
+                <div class="angle-display">Ángulo: <span class="angle-value" id="angleValue">90</span>°</div>
+            </div>
+            <button onclick="moveServo(0)"><i class="fas fa-arrow-left"></i> 0°</button>
+            <button onclick="moveServo(90)"><i class="fas fa-arrow-up"></i> 90°</button>
+            <button onclick="moveServo(180)"><i class="fas fa-arrow-right"></i> 180°</button>
+        </div>
+        
+        <div class="panel">
+            <h3 class="panel-title"><i class="fas fa-clock"></i> Programar Alimentación</h3>
+            <div class="form-group">
+                <label for="alarmTime">Hora de alimentación:</label>
+                <input type="time" id="alarmTime" required>
+            </div>
+            <button onclick="setAlarm()"><i class="fas fa-bell"></i> Activar Alarma</button>
+            <button onclick="cancelAlarm()"><i class="fas fa-ban"></i> Cancelar</button>
+            <div class="alarm-status" id="alarmStatus"></div>
+        </div>
+    </div>
+    
+    <script>
+        let alarmTime = null;
+        const clock = document.getElementById('clock');
+        const angleValue = document.getElementById('angleValue');
+        const alarmStatus = document.getElementById('alarmStatus');
+        
+        // Actualizar reloj cada segundo
+        function updateClock() {
+            const now = new Date();
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            clock.textContent = ${hours}:${minutes}:${seconds};
+            
+            // Verificar alarma
+            if (alarmTime && ${hours}:${minutes} === alarmTime) {
+                moveServo(90);  // Mover a posición de alimentación
+                alarmTime = null;
+                alarmStatus.innerHTML = '<i class="fas fa-check-circle"></i> ¡Alimentación completada!';
+                setTimeout(() => {
+                    alarmStatus.textContent = '';
+                }, 5000);
+                
+                // Notificación visual
+                document.body.style.backgroundColor = '#e8f5e9';
+                setTimeout(() => {
+                    document.body.style.backgroundColor = '#f5f7fa';
+                }, 1000);
+            }
+            setTimeout(updateClock, 1000);
+        }
+        
+        // Mover servo (manual o automático)
+        function moveServo(angle) {
+            fetch(/?angle=${angle})
+                .then(() => {
+                    angleValue.textContent = angle;
+                    document.getElementById('servoSlider').value = angle;
+                })
+                .catch(err => console.error("Error:", err));
+        }
+        
+        // Control manual con deslizador
+        function updateServo(angle) {
+            angleValue.textContent = angle;
+            moveServo(angle);
+        }
+        
+        // Programar alarma
+        function setAlarm() {
+            const timeInput = document.getElementById('alarmTime').value;
+            if (!timeInput) {
+                alarmStatus.innerHTML = '<i class="fas fa-exclamation-circle"></i> ¡Selecciona una hora primero!';
+                setTimeout(() => {
+                    alarmStatus.textContent = '';
+                }, 3000);
+                return;
+            }
+            alarmTime = timeInput;
+            alarmStatus.innerHTML = <span class="active-alarm"><i class="fas fa-bell"></i> Alarma programada: ${alarmTime}</span>;
+        }
+        
+        // Cancelar alarma
+        function cancelAlarm() {
+            alarmTime = null;
+            alarmStatus.innerHTML = '<i class="fas fa-bell-slash"></i> Alarma cancelada';
+            setTimeout(() => {
+                alarmStatus.textContent = '';
+            }, 3000);
+        }
+        
+        updateClock();  // Iniciar reloj
+    </script>
+</body>
+</html>
+    """
+    conn.send("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n")
+    conn.send(html)
+    conn.close()
