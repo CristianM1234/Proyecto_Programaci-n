@@ -1,0 +1,180 @@
+import network
+import socket
+from machine import Pin, RTC
+import time
+import utime
+
+# Configuración del motor paso a paso
+IN1 = Pin(12, Pin.OUT)
+IN2 = Pin(14, Pin.OUT)
+IN3 = Pin(27, Pin.OUT)
+IN4 = Pin(26, Pin.OUT)
+
+# Secuencia de pasos (modo de paso completo)
+step_sequence = [
+    [1, 0, 0, 1],
+    [1, 0, 0, 0],
+    [1, 1, 0, 0],
+    [0, 1, 0, 0],
+    [0, 1, 1, 0],
+    [0, 0, 1, 0],
+    [0, 0, 1, 1],
+    [0, 0, 0, 1]
+]
+
+# Variables globales para la alarma
+alarm_time = None
+alarm_active = False
+rtc = RTC()
+
+def move_steps(steps, delay_ms=2):
+    direction = 1 if steps > 0 else -1
+    steps = abs(steps)
+    for _ in range(steps):
+        for step in step_sequence[::direction]:
+            IN1.value(step[0])
+            IN2.value(step[1])
+            IN3.value(step[2])
+            IN4.value(step[3])
+            time.sleep_ms(delay_ms)
+
+def stop_motor():
+    IN1.value(0)
+    IN2.value(0)
+    IN3.value(0)
+    IN4.value(0)
+
+def check_alarm():
+    global alarm_time, alarm_active
+    if alarm_active and alarm_time:
+        now = rtc.datetime()
+        current_time = "{:02d}:{:02d}".format(now[4], now[5])
+        if current_time == alarm_time:
+            # Ejecutar acción de la alarma
+            print(f"¡Alarma activada a las {alarm_time}! Moviendo motor...")
+            move_steps(2048)  # 1 vuelta completa
+            alarm_active = False  # Desactivar alarma después de ejecutar
+
+# Modo Access Point
+ap = network.WLAN(network.AP_IF)
+ap.active(True)
+ap.config(essid="ESP32_Stepper", password="12345678")
+print("IP del AP:", ap.ifconfig()[0])
+
+# Servidor web
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(('0.0.0.0', 80))
+s.listen(5)
+
+print("Servidor web listo en http://192.168.4.1")
+
+while True:
+    check_alarm()  # Verificar la alarma en cada ciclo
+    
+    conn, addr = s.accept()
+    request = conn.recv(1024).decode('utf-8')
+    
+    # Manejo de solicitudes
+    if "GET /?steps=" in request:
+        steps = int(request.split('=')[1].split(' ')[0])
+        move_steps(steps)
+        print(f"Motor movido {steps} pasos")
+    elif "GET /?stop" in request:
+        stop_motor()
+        print("Motor detenido")
+    elif "GET /?set_alarm=" in request:
+        alarm_time = request.split('=')[1].split(' ')[0]
+        alarm_active = True
+        print(f"Alarma configurada a las {alarm_time}")
+    elif "GET /?disable_alarm" in request:
+        alarm_active = False
+        print("Alarma desactivada")
+    
+    # Interfaz web con control de alarma
+    html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>Control de Motor con Alarma</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 20px; background-color: #f5f5f5; }
+        .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; }
+        .panel { margin: 20px 0; padding: 15px; background: #f9f9f9; border-radius: 8px; }
+        button { background-color: #3498db; color: white; border: none; padding: 10px 20px; margin: 5px; border-radius: 5px; font-size: 16px; cursor: pointer; }
+        button:hover { background-color: #2980b9; }
+        button.danger { background-color: #e74c3c; }
+        button.success { background-color: #2ecc71; }
+        input { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #ddd; }
+        .status { margin-top: 20px; padding: 10px; border-radius: 5px; }
+        .alarm-status { background-color: #fff3cd; }
+        .time-display { font-size: 18px; font-weight: bold; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Control de Motor con Alarma</h1>
+        
+        <div class="time-display" id="currentTime">Hora actual: """ + ":".join("{:02d}".format(x) for x in rtc.datetime()[4:6]) + """</div>
+        
+        <div class="panel">
+            <h3>Control del Motor</h3>
+            <button onclick="moveMotor(1800)">Servir una porcion</button>
+            <button onclick="stopMotor()" class="danger">Detener Motor</button>
+        </div>
+        
+        <div class="panel">
+            <h3>Control de Alarma</h3>
+            <input type="time" id="alarmTime" required>
+            <button onclick="setAlarm()" class="success">Activar Alarma</button>
+            <button onclick="disableAlarm()" class="danger">Desactivar</button>
+            <div class="status alarm-status" id="alarmStatus">Alarma: """ + ("ACTIVA ("+alarm_time+")" if alarm_active else "INACTIVA") + """</div>
+        </div>
+    </div>
+    
+    <script>
+        function updateTime() {
+            const now = new Date();
+            document.getElementById('currentTime').textContent = "Hora actual: " + 
+                now.getHours().toString().padStart(2, '0') + ":" + 
+                now.getMinutes().toString().padStart(2, '0');
+            setTimeout(updateTime, 1000);
+        }
+        
+        function moveMotor(steps) {
+            fetch(`/?steps=${steps}`)
+                .then(() => console.log(`Motor movido ${steps} pasos`));
+        }
+        
+        function stopMotor() {
+            fetch('/?stop')
+                .then(() => console.log("Motor detenido"));
+        }
+        
+        function setAlarm() {
+            const alarmTime = document.getElementById('alarmTime').value;
+            if (alarmTime) {
+                fetch(`/?set_alarm=${alarmTime}`)
+                    .then(() => {
+                        document.getElementById('alarmStatus').textContent = `Alarma: ACTIVA (${alarmTime})`;
+                        document.getElementById('alarmStatus').style.backgroundColor = '#d4edda';
+                    });
+            }
+        }
+        
+        function disableAlarm() {
+            fetch('/?disable_alarm')
+                .then(() => {
+                    document.getElementById('alarmStatus').textContent = 'Alarma: INACTIVA';
+                    document.getElementById('alarmStatus').style.backgroundColor = '#f8d7da';
+                });
+        }
+        
+        updateTime(); // Iniciar el reloj
+    </script>
+</body>
+</html>"""
+    
+    conn.send("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n")
+    conn.send(html)
+    conn.close()
